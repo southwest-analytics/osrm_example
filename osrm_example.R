@@ -46,11 +46,11 @@ df_dst <- read.csv('destinations.csv')
 df_src <- read.csv('OA21_PWC.csv')
 
 # Load the output area to ICB lookup
-df_lu <- read.csv('OA21_LSOA21_MSOA21_ICB22_LAD22_EW_LU.csv') %>%
-  filter(ICB22CDH == 'QJK')
+df_lu <- read.csv('OA21_ICB23_LU.csv') %>%
+  filter(ICB23CDH == 'QJK')
 
 # Filter the sources to just Devon output areas
-df_src <- df_src %>% semi_join(df_lu, by = c('OA21CD' = 'oa21cd'))
+df_src <- df_src %>% semi_join(df_lu, by = 'OA21CD')
 
 # Convert the dataframe into sf with CRS 27700 (Easting/Northing) and 
 # then transform in CRS 4326 (Longitude/Latitude) and save the coordinates 
@@ -105,7 +105,7 @@ df_journeys <- sf_journeys %>%
 # Load the 2021 Output Areas shapefile and transform to CRS 4326
 sf_oa21 <- st_read(dsn = 'OA21', layer= 'OA21') %>%
   st_transform(crs = 4326) %>%
-  semi_join(df_lu, by = c('OA21CD' = 'oa21cd')) %>%
+  semi_join(df_lu, by = 'OA21CD') %>%
   st_make_valid()
 
 # Select the closest site by travel time (duration) for all sites
@@ -259,6 +259,134 @@ map <- leaflet() %>%
             opacity = 0.7) %>%
   # Add the layers control and hide all bar the overall layer
   addLayersControl(baseGroups = c('Overall', 'Exc. Torbay', 'Exc. NDDH', 'Exc. RD&E', 'Exc. Derriford')) %>%
-  hideGroup(c('Exc. Torbay', 'Exc. NDDH', 'Exc. RD&E', 'Exc. Derriford'))
+  hideGroup(c('Exc. Torbay', 'Exc. NDDH', 'Exc. RD&E', 'Exc. Derriford')) %>%
+  # Add acknowledgements
+  addControl(
+    html = paste0('Source: Office for National Statistics licensed under the Open Government Licence v.3.0<br>',
+                  'Contains OS data &copy Crown copyright and database right [2023]<br>',
+                  'Data: <a href="http://www.openstreetmap.org/copyright">&copy OpenStreetMap contributors, ODbL 1.0</a><br>',
+                  'Routing: <a href="http://project-osrm.org/">OSRM</a>'),
+    position = "bottomleft", layerId = NULL, className = "info legend"
+  )
 map
 
+# Save the interactive map as a single file html
+saveWidget(map, 'combined_isochrones.html')
+
+# 5. Use osrm::osrmIsochrone to create the single point isochrones for each site ----
+# ***********************************************************************************
+
+# Create the breaks as 10 minute bands up to 1 hour journey time
+bands <- seq(0, 60, 10)
+
+# Set the low and high resolution values
+lo_res <- 30
+hi_res <- 120
+
+sf_iso_tor_lo <- osrm::osrmIsochrone(loc = c(df_dst$lng[df_dst$orgcd=='RA901'],
+                                          df_dst$lat[df_dst$orgcd=='RA901']),
+                                     breaks = bands,
+                                     res = lo_res)
+sf_iso_tor_hi <- osrm::osrmIsochrone(loc = c(df_dst$lng[df_dst$orgcd=='RA901'],
+                                          df_dst$lat[df_dst$orgcd=='RA901']),
+                                     breaks = bands,
+                                     res = hi_res)
+sf_iso_tor_vhi <- osrm::osrmIsochrone(loc = c(df_dst$lng[df_dst$orgcd=='RA901'],
+                                             df_dst$lat[df_dst$orgcd=='RA901']),
+                                     breaks = bands,
+                                     res = 240)
+
+palBand <- colorFactor(palette = 'RdYlGn', domain = c(1:6), na.color = '#cecece', reverse =  TRUE)
+
+map <- leaflet() %>%
+  addTiles() %>%
+  # Add the low resolution layer
+  addPolygons(data = sf_iso_tor_lo,
+              stroke = FALSE,
+              fillColor = ~palBand(id),
+              fillOpacity = 0.7,
+              popup = ~paste0(isomin, '-', isomax, ' mins'),
+              group = 'Low Res') %>%
+  # Add the high resolution layer
+  addPolygons(data = sf_iso_tor_hi,
+              stroke = FALSE,
+              fillColor = ~palBand(id),
+              fillOpacity = 0.7,
+              popup = ~paste0(isomin, '-', isomax, ' mins'),
+              group = 'High Res') %>%
+  # Add the very high resolution layer
+  addPolygons(data = sf_iso_tor_vhi,
+              stroke = FALSE,
+              fillColor = ~palBand(id),
+              fillOpacity = 0.7,
+              popup = ~paste0(isomin, '-', isomax, ' mins'),
+              group = 'Very High Res') %>%
+  # Add the location marker
+  addCircleMarkers(data = df_dst %>% filter(orgcd=='RA901'),
+                   radius = 5,
+                   weight = 3,
+                   fillColor = 'white',
+                   fillOpacity = 1,
+                   popup = ~orgnm,
+                   group = 'Location') %>%
+  # Add the travel time band legend
+  addLegend(position = 'bottomright', 
+            title = 'Travel Time Band\n(minutes)',
+            colors = c('#1a9850','#91cf60','#d9ef8b','#fee08b','#fc8d59','#d73027'),
+            labels = c('0-10 mins', '10-20 mins', '20-30 mins', 
+                       '30-40 mins', '40-50 mins', '50-60 mins'),
+            opacity = 0.7) %>%
+  # Add the layers control and hide all bar the overall layer
+  addLayersControl(baseGroups = c('Low Res', 'High Res', 'Very High Res'), overlayGroups = 'Location') %>%
+  hideGroup(c('High Res')) %>%
+  # Add acknowledgements
+  addControl(
+    html = paste0('Source: Office for National Statistics licensed under the Open Government Licence v.3.0<br>',
+                  'Contains OS data &copy Crown copyright and database right [2023]<br>',
+                  'Data: <a href="http://www.openstreetmap.org/copyright">&copy OpenStreetMap contributors, ODbL 1.0</a><br>',
+                  'Routing: <a href="http://project-osrm.org/">OSRM</a>'),
+    position = "bottomleft", layerId = NULL, className = "info legend"
+  )
+map
+
+# Save the interactive map as a single file html
+saveWidget(map, 'single_isochrone.html')
+
+# 6. An example of route mapping ----
+# ***********************************
+
+map <- leaflet() %>%
+  addTiles() %>%
+  # Add the source marker
+  addCircleMarkers(data = df_src %>% filter(OA21CD=='E00102794'),
+                   radius = 5,
+                   weight = 3,
+                   fillColor = 'white',
+                   fillOpacity = 1,
+                   popup = ~OA21CD,
+                   group = 'Location') %>%
+  # Add the destination marker
+  addCircleMarkers(data = df_dst %>% filter(orgcd=='RA901'),
+                   radius = 5,
+                   weight = 3,
+                   fillColor = 'white',
+                   fillOpacity = 1,
+                   popup = ~orgnm,
+                   group = 'Location') %>%
+  # Add the route
+  addPolylines(data = sf_journeys %>% filter(oa21cd=='E00102794' & orgcd=='RA901'),
+               weight = 3,
+               popup = ~paste0('Duration: ', round(duration, 1), ' mins<br>Distance: ', round(distance, 1), ' km'),
+               group = 'Route') %>%
+  # Add acknowledgements
+  addControl(
+    html = paste0('Source: Office for National Statistics licensed under the Open Government Licence v.3.0<br>',
+                  'Contains OS data &copy Crown copyright and database right [2023]<br>',
+                  'Data: <a href="http://www.openstreetmap.org/copyright">&copy OpenStreetMap contributors, ODbL 1.0</a><br>',
+                  'Routing: <a href="http://project-osrm.org/">OSRM</a>'),
+    position = "bottomleft", layerId = NULL, className = "info legend"
+  )
+map
+
+# Save the interactive map as a single file html
+saveWidget(map, 'route.html')
